@@ -42,10 +42,12 @@ test("the upstream attribution appears verbatim in every place that claims it", 
   const notices = flat(await readText(path.join(SKILL_ROOT, "THIRD-PARTY-NOTICES.md")));
   const provenance = await readJson(path.join(SKILL_ROOT, "scripts/vendored/PROVENANCE.json"));
   const readme = flat(await readText(path.join(SKILL_ROOT, "README.md")));
+  const readmeEn = flat(await readText(path.join(SKILL_ROOT, "README.en.md")));
 
   assert(notices.includes(ATTRIBUTION), "notices file must carry the upstream sentence");
   assertEq(provenance.attribution, ATTRIBUTION, "PROVENANCE.json must carry it exactly");
   assert(readme.includes(ATTRIBUTION), "README must carry it exactly");
+  assert(readmeEn.includes(ATTRIBUTION), "README.en.md must carry it exactly");
   assertEq(provenance.license, "MIT", "PROVENANCE.json records the licence");
   assert(license.includes("MIT License"), "LICENSE states the licence in its canonical form");
 });

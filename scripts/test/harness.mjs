@@ -10,6 +10,11 @@ export function test(name, fn) {
   registered.push({ name, fn });
 }
 
+/** Total number of registered tests — lets the docs assert their own claim. */
+export function testCount() {
+  return registered.length;
+}
+
 export function assert(cond, message = "assertion failed") {
   if (!cond) throw new Error(message);
 }
