@@ -373,7 +373,7 @@ cmd_doctor() {
   if [ "$_os" = "Darwin" ]; then
     ok "macOS ${_arch} · $(sw_vers -productVersion 2>/dev/null || echo '?')"
   else
-    bad "非 macOS（$_os）—— ego lite 目前只支持 macOS"
+    bad "非 macOS（${_os}）—— ego lite 目前只支持 macOS"
     _fail=$((_fail + 1))
   fi
 
@@ -503,7 +503,7 @@ cmd_init() {
 
   resolve_jev
   if [ -n "$JEV_KEY" ]; then
-    ok "Jev 后端：${JEV_BACKEND:-auto} · 密钥 $(mask "$JEV_KEY")（来自 $JEV_SOURCE）"
+    ok "Jev 后端：${JEV_BACKEND:-auto} · 密钥 $(mask "$JEV_KEY")（来自 ${JEV_SOURCE}）"
   else
     warn "没有找到 Jev 决策后端的密钥"
     say ""
@@ -1098,5 +1098,5 @@ case "$cmd" in
   prune) cmd_prune "$@" ;;
   version|-v|--version) cmd_version ;;
   help|-h|--help) cmd_help ;;
-  *) die "未知命令：$cmd（用 b2b-test help 查看用法）" ;;
+  *) die "未知命令：${cmd}（用 b2b-test help 查看用法）" ;;
 esac

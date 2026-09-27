@@ -105,7 +105,7 @@ for root in $ROOTS; do
     "$SKILL_ROOT"*) say "跳过（已在技能目录内）：$target"; continue ;;
   esac
   if [ "$DRY" = "1" ]; then
-    say "（演练）$MODE：$target -> $SKILL_ROOT"
+    say "（演练）${MODE}：$target -> $SKILL_ROOT"
     linked=$((linked + 1))
     continue
   fi

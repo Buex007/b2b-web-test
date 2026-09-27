@@ -86,3 +86,22 @@ test("every shipped lib is present and importable by relative path", async () =>
     assert(files.includes(expected), `missing scripts/lib/${expected}`);
   }
 });
+
+test("shell scripts brace every variable followed by a wide character", async () => {
+  // On macOS /bin/sh (bash 3.2 in POSIX mode) `$VAR中文` swallows the
+  // multibyte character into the variable name and dies with "unbound
+  // variable". Only the braced form ${VAR}中文 is safe. This bites precisely
+  // when the message is Chinese, which is most of them.
+  const path = await nodePath();
+  const targets = ["bin/b2b-test", "install.sh", "uninstall.sh"];
+  const hits = [];
+  for (const rel of targets) {
+    const text = await readText(path.join(SKILL_ROOT, rel));
+    text.split("\n").forEach((line, i) => {
+      if (/^\s*#/.test(line)) return;
+      const m = line.match(/\$[A-Za-z_][A-Za-z0-9_]*[^\x00-\x7F]/);
+      if (m) hits.push(`${rel}:${i + 1}: ${m[0]}`);
+    });
+  }
+  assert(hits.length === 0, `\n     ${hits.join("\n     ")}`);
+});
