@@ -1,0 +1,19 @@
+# Execution records must never live in the repository: B-end screenshots can
+# contain customer data. They default to ~/.local/share/b2b-web-test/.
+runs/
+batches/
+reports/
+records/
+
+# Credentials
+secrets.env
+config.local.env
+*.key
+
+# Noise
+.DS_Store
+*.log
+node_modules/
+coverage/
+.venv/
+__pycache__/

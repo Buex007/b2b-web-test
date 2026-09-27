@@ -1,0 +1,4 @@
+interface:
+  display_name: "B端 Web 测试"
+  short_description: "用 ego-browser + Jev 跑 B 端 Web 测试，每个用例留下可回溯的记录"
+  default_prompt: "用 $b2b-web-test 跑一条 B 端用例：入口地址 <url>，用例描述 <描述>"

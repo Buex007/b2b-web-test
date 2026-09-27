@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>B2B 自检表单</title>
+<style>
+  body { font: 15px/1.7 -apple-system, "PingFang SC", sans-serif; margin: 40px; }
+  label { display: block; margin: 12px 0; }
+  input { padding: 6px 8px; width: 260px; }
+  button { padding: 8px 20px; margin-top: 8px; }
+  #result { margin-top: 20px; font-weight: 600; color: #0a7d33; }
+</style>
+</head>
+<body>
+<h1>B2B 自检表单</h1>
+<p>这个页面只用于验证工具链本身：工作目录、步骤记录、截图、报告。</p>
+<form id="selfcheck-form">
+  <label>姓名 <input name="custname" type="text" placeholder="请输入姓名"></label>
+  <label>邮箱 <input name="custemail" type="text" placeholder="请输入邮箱"></label>
+  <button type="button" id="submit-btn">提交</button>
+</form>
+<p id="result" hidden></p>
+<script>
+  document.getElementById("submit-btn").addEventListener("click", function () {
+    var name = document.querySelector('input[name="custname"]').value || "(空)";
+    var box = document.getElementById("result");
+    box.hidden = false;
+    box.textContent = "提交成功：已记录 " + name;
+  });
+</script>
+</body>
+</html>
