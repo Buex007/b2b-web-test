@@ -47,26 +47,40 @@
 
 ## 使用前提
 
-| 前提 | 说明 |
+### ⚠️ 只有两件事必须你亲自做
+
+其余所有配置（装技能、初始化、建用例、执行、出报告）**都可以让 AI 代劳**，你只需要跟它说话。
+
+| 必须你本人做 | 为什么 AI 代替不了 |
+|---|---|
+| **1️⃣ 下载并打开 ego lite，走完首次引导** | 首次引导是图形界面里的操作，脚本点不了；`ego-browser` 命令也由它注册 |
+| **2️⃣ 拿一个 Jev 后端密钥** | 注册账号需要邮箱、可能要绑卡；而且密钥不该贴在聊天里让 AI 转手 |
+
+另外两处 AI 会**主动来找你**，不需要你提前准备：浏览器里的登录 / 短信 / MFA 验证码、
+以及 ego lite 被 Gatekeeper 拦下时的系统设置放行。
+
+| 其它前提 | 说明 |
 |---|---|
 | **macOS** | ego lite 目前只支持 macOS |
-| **ego lite 已安装并完成首次引导** | `ego-browser` 命令由它提供。这一步需要在图形界面里点几下，脚本无法代劳 |
-| **`ego-browser` 在 PATH** | 通常在 `~/.local/bin`；不在就 `export PATH="$HOME/.local/bin:$PATH"` |
-| **一个 Jev 决策后端密钥** | TypeSafe / Vercel AI Gateway / OpenRouter 三选一。放在 `~/.config/ego-jev/secrets.env` 或本工具自己的配置里 |
-| 不需要 | `jq`、`node`、`python`、`git`（运行链路都不依赖） |
+| **`ego-browser` 在 PATH** | 通常在 `~/.local/bin`；AI 会检查，缺了会告诉你怎么补 |
+| 不需要 | `jq`、`node`、`python`、`git`——运行链路都不依赖 |
 
-**没有后端密钥也能先跑起来**：内置 mock 决策器可以离线跑通整条链路
-（不联网、不花 token），用来验证安装是否正确。
+**还没拿到密钥也能先跑通**：内置 mock 决策器可以离线跑整条链路（不联网、不花 token），
+让 AI 跑一句 `b2b-test selfcheck` 就能证明工具链装好了。
 
-需要**人工**介入、工具不会替你做的三件事：ego lite 首次 GUI 引导、SSO/短信/MFA 登录、
-Jev 后端账号注册。
+### 1️⃣ ego lite（一次性，约 2 分钟）
 
-### 第一步：拿到一个 Jev 密钥
+1. 打开 <https://lite.ego.app/>，下载 macOS 版
+2. 安装后**把它打开**，按引导走完（问你是否导入浏览器数据时可以跳过）
+3. 引导过程中会把 `ego-browser` 命令注册到 `~/.local/bin`
+4. 如果被 Gatekeeper 拦下：**系统设置 → 隐私与安全性 → 仍要打开**
 
-⚠️ **这一步只能你自己来**——注册账号需要邮箱、可能还要绑卡，工具无法代劳。
-拿到之后，剩下的都交给一条命令。
+装完可以让 AI 验证：对它说"跑一下 `b2b-test doctor`"。
 
-**1. 拿密钥（三选一，最快是第 1 家）**
+### 2️⃣ Jev 密钥
+
+这一步 AI 也帮不了你——注册账号它做不了。拿到之后**不用手改任何文件**，
+AI 或你跑一条命令就配好了。
 
 | 选 | 去哪 | 怎么做 |
 |---|---|---|
@@ -74,11 +88,10 @@ Jev 后端账号注册。
 | ② TypeSafe | <https://typesafe.ai/> | 注册 → 在控制台复制 API Key |
 | ③ Vercel AI Gateway | <https://vercel.com/dashboard> | 打开 AI Gateway → 生成 API Key |
 
-**2. 粘进去（不用手改任何文件）**
+**怎么给工具**（⚠️ **不要贴进聊天窗口**）：
 
-```sh
-b2b-test key
-```
+- **让 AI 运行 `b2b-test key`**，你在它打开的终端里直接粘贴（输入不回显）
+- **或者你自己在终端跑 `b2b-test key`**
 
 它会问你选哪一家 → 让你粘贴密钥（**输入不回显**）→ 自动判断后端 → 写入
 `~/.config/b2b-web-test/config.env`（权限 `0600`）→ **立刻联网验证**这笔密钥是否被接受。
@@ -86,16 +99,26 @@ b2b-test key
 
 粘贴时连 `export XXX_API_KEY="..."` 一起复制也没关系，它会自动剥掉变量名和引号。
 
-**3. 随时复查**
+如果确实不介意密钥留在对话记录里，也可以让 AI 执行
+`b2b-test key set --stdin`，但**不推荐**。
+
+**随时复查**
 
 ```sh
-b2b-test key check     # 当前密钥来源、后端、是否有效
+b2b-test key check     # 当前密钥来源、后端、是否有效（不消耗生成额度）
 ```
 
 > 已经有 `~/.config/ego-jev/secrets.env`（另一个技能写的）也不用重复配置——
 > 本工具会直接复用，并用 `b2b-test key check` 显示它来自哪里。
 
 ## 安装
+
+**最省事的方式：直接让 AI 装。** 把仓库地址丢给它就行：
+
+> 帮我安装并配置 b2b-web-test：仓库 `https://github.com/Buex007/b2b-web-test`，
+> 装完跑 init 和 selfcheck，缺什么你自己处理，最后把结果告诉我。
+
+自己手动装也很简单：
 
 ```sh
 git clone https://github.com/Buex007/b2b-web-test.git ~/.codex/skills/b2b-web-test
@@ -115,10 +138,49 @@ sh install.sh --copy         # 拷贝而不是软链
 
 ## 怎么使用
 
-### 五步
+### 推荐姿势：你只说话，配置和执行都交给 AI
+
+把下面这段复制给任意**能执行命令**的智能体（Codex、Claude Code、Cursor、自研 agent 都行）：
+
+> 用 b2b-web-test 帮我跑一条 B 端用例。
+> 入口地址：`https://你的系统地址`
+> 用例描述：`你想验证什么，例如"登录后新建订单，确认列表出现该订单"`
+>
+> 配置和执行你自己做，**不要让我手动敲命令**；只有必须我本人操作的地方
+> （ego lite 引导、Jev 密钥、浏览器里的登录/MFA）再来找我。
+
+还没装过的话，先说这一句：
+
+> 帮我配置 b2b-web-test：执行 `b2b-test init`，缺什么按提示处理，
+> 最后跑一次 `b2b-test selfcheck` 把结果给我看。
+
+### 分工：AI 做什么，你做什么
+
+| # | 谁 | 动作 |
+|---|---|---|
+| 1 | **AI** | `sh install.sh` —— 把技能装到本机已有的技能目录（Codex / Claude / 共享目录都会链上） |
+| 2 | **AI** | `b2b-test init` —— 检查 ego lite、写配置、跑离线自检；缺什么自己按提示处理 |
+| 3 | **AI** | `b2b-test doctor` / `b2b-test key check` —— 自检环境与密钥状态 |
+| 4 | **AI** | `b2b-test new "用例描述" --url <地址>` —— 执行前先建好工作目录 |
+| 5 | **AI** | 补全 `<用例目录>/plan.mjs` —— Jev 负责"点哪里"，AI 负责读内容、判断结论 |
+| 6 | **AI** | `b2b-test exec "<用例目录>"` —— 执行，过程截图与结论自动落盘 |
+| 7 | **AI** | `b2b-test report --open` —— 把可视化看板给你看 |
+| ⚠️ | **你** | 只在三处被叫到：**ego lite 引导**、**Jev 密钥**、**浏览器里的登录/MFA** |
+
+也就是说：你正常只需要**说一句话 + 在浏览器里点几下登录**，其它都不用碰。
+
+### 想确认 AI 有没有偷懒
+
+> 跑 `b2b-test doctor`、`b2b-test selfcheck`，把原始输出贴给我；
+> 没配密钥就先跳过，用 selfcheck 证明链路是通的。
+
+`selfcheck` 不联网、不花 token，通过即说明**工作目录、步骤记录、截图、结论、报告与看板**
+这条链路是通的。
+
+### 全部手动也可以（AI 不在身边时）
 
 ```sh
-# 0) 一次性：装 ego lite、配 Jev、跑离线自检
+# 0) 一次性：检查 ego lite、配 Jev、跑离线自检
 b2b-test init
 
 # 1) 为一条用例建工作目录（执行前就建好）
