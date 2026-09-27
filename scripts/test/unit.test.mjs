@@ -67,8 +67,10 @@ test("slugify keeps CJK, strips punctuation, bounds length", () => {
 
 test("maskValue never reveals the whole credential", () => {
   assertEq(maskValue("abc"), "****");
-  const m = maskValue("sk-or-v1-abcdef123456");
-  assert(!m.includes("abcdef123456"), "secret body must not survive masking");
+  // Deliberately not shaped like a real provider key: the repository is
+  // published, and a key-shaped literal here can trip secret scanning.
+  const m = maskValue("placeholder-value-1234567890");
+  assert(!m.includes("1234567890"), "secret body must not survive masking");
 });
 
 test("fmtMs is readable across magnitudes", () => {
