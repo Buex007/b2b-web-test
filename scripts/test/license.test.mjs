@@ -25,17 +25,29 @@ test("LICENSE exists and is MIT", async () => {
   assertMatch(text, /Copyright \(c\) \d{4} /, "copyright line");
 });
 
+test("LICENSE stays canonical so GitHub can detect MIT", async () => {
+  // GitHub's licence detection needs the untouched MIT text. Anything appended
+  // after the disclaimer drops it to NOASSERTION, which is what happened when
+  // the attribution lived inside this file.
+  const text = await readText(path.join(SKILL_ROOT, "LICENSE"));
+  assertEq(text.trimEnd().endsWith("SOFTWARE."), true, "LICENSE must end with the MIT text");
+  assert(
+    !text.includes("jev-ultrafast"),
+    "third-party attribution belongs in THIRD-PARTY-NOTICES.md, not in LICENSE",
+  );
+});
+
 test("the upstream attribution appears verbatim in every place that claims it", async () => {
   const license = flat(await readText(path.join(SKILL_ROOT, "LICENSE")));
   const notices = flat(await readText(path.join(SKILL_ROOT, "THIRD-PARTY-NOTICES.md")));
   const provenance = await readJson(path.join(SKILL_ROOT, "scripts/vendored/PROVENANCE.json"));
   const readme = flat(await readText(path.join(SKILL_ROOT, "README.md")));
 
-  assert(license.includes(ATTRIBUTION), "LICENSE must carry the upstream sentence");
   assert(notices.includes(ATTRIBUTION), "notices file must carry the upstream sentence");
   assertEq(provenance.attribution, ATTRIBUTION, "PROVENANCE.json must carry it exactly");
   assert(readme.includes(ATTRIBUTION), "README must carry it exactly");
   assertEq(provenance.license, "MIT", "PROVENANCE.json records the licence");
+  assert(license.includes("MIT License"), "LICENSE states the licence in its canonical form");
 });
 
 test("the vendored file is still byte-identical to what PROVENANCE.json records", async () => {

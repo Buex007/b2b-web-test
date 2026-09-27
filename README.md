@@ -269,3 +269,4 @@ b2b-test selfcheck   # 离线整链路：建目录 → 跑一步 → 出截图�
 > MIT. Policy, snapshot, and question text are derived from jev-ultrafast (MIT, Browser Use).
 
 完整归属与维护约定见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
+（归属声明放在单独的 NOTICE 文件里，`LICENSE` 保持 MIT 标准原文，这样 GitHub 能正确识别许可证。）
