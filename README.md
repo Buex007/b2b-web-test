@@ -8,6 +8,8 @@
 > (browser execution) with Jev (per-step element decisions), keeping an auditable
 > record for every case.
 
+**MIT** · macOS · 零外部依赖（运行链路不需要 jq / node / python）
+
 ![测试看板](docs/dashboard.png)
 
 *一个批次的看板：用例总数、通过率、每个用例历次结果、入口地址。*
@@ -259,6 +261,11 @@ b2b-test selfcheck   # 离线整链路：建目录 → 跑一步 → 出截图�
 
 ## 许可
 
-本仓库尚未附带 LICENSE 文件，请注意默认情况下"保留所有权利"。
-其中 `scripts/vendored/jev-loop.mjs` 逐字节复制自 ego-jev 技能，上游以 **MIT** 许可分发；
-发布或再分发前建议补一个与本项目意图一致的 LICENSE，并保留上游许可声明。
+**MIT** —— 见 [LICENSE](LICENSE)。
+
+本仓库包含第三方代码：`scripts/vendored/jev-loop.mjs` 逐字节复制自 ego-jev（MIT），
+未作任何改动。按上游声明：
+
+> MIT. Policy, snapshot, and question text are derived from jev-ultrafast (MIT, Browser Use).
+
+完整归属与维护约定见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。

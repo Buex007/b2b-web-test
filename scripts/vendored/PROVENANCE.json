@@ -4,6 +4,8 @@
   "upstreamSkillVersion": "0.4.0",
   "vendoredAt": "2026-09-27",
   "sha256": "90bb7a76a86f2154e85da9879adc9b6e79b2f0c1fd396e9809ef24c7028b215e",
+  "license": "MIT",
+  "attribution": "MIT. Policy, snapshot, and question text are derived from jev-ultrafast (MIT, Browser Use).",
   "modifications": "none — kept byte-identical so upstream diffs stay readable and the drift check is exact",
-  "whyVendored": "The skill is a git repository that must stay self-contained and reproducible on any Mac. A runtime dependency on ~/.codex/skills/ego-jev would break that. All new behaviour lives in scripts/lib/, which wraps this file; nothing here is patched, so `scripts/sync-jev.mjs --check` can compare hashes directly."
+  "whyVendored": "The skill is a git repository that must stay self-contained and reproducible on any Mac, so it cannot depend on a separately installed ego-jev skill at run time. All new behaviour lives in scripts/lib/, which wraps this file; nothing here is patched, so `scripts/sync-jev.mjs --check` can compare hashes directly. Attribution: see THIRD-PARTY-NOTICES.md."
 }
