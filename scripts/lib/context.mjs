@@ -10,7 +10,7 @@ import { createRecorder, createCaseDir, EXIT_CODE } from "./recorder.mjs";
 import { ensureDir } from "./util.mjs";
 import { createSession, envSlugFor } from "./session.mjs";
 import { createJev } from "./jev.mjs";
-import { renderCase, renderDashboard, toJUnit } from "./report.mjs";
+import { renderCase, renderBatch, renderDashboard, scanAll, toJUnit } from "./report.mjs";
 import { autoFormAsk, scriptedAsk } from "./mock-ask.mjs";
 import * as helpers from "./helpers.mjs";
 
@@ -291,8 +291,23 @@ export async function runFromJob({ jobDir }) {
   }
 
   if (payload.action === "report") {
+    // Rebuild every view from the records on disk. result.json is the source of
+    // truth, so editing a verdict or reason by hand and re-running `report`
+    // must refresh the case page too — not just the dashboard.
+    const batches = await scanAll({ dataDir: payload.dataDir });
+    let cases = 0;
+    for (const b of batches) {
+      for (const c of b.cases) {
+        if (!c.result) continue;
+        await renderCase({ caseDir: c.dir, result: c.result });
+        cases += 1;
+      }
+      await renderBatch({ batchDir: b.dir, batch: b.batch, cases: b.cases });
+    }
     const res = await renderDashboard({ dataDir: payload.dataDir });
-    process.stdout.write(`B2B_REPORT=${res.html}\n`);
+    process.stdout.write(
+      `B2B_REPORT=${res.html} batches=${batches.length} cases=${cases}\n`,
+    );
     return 0;
   }
 

@@ -358,6 +358,16 @@ test("report renders markdown, html and a scannable index", async () => {
   const reportHtml = await f.readFile(path.join(created.caseDir, "report.html"), "utf8");
   assert(reportHtml.includes("<!doctype html>"), "html report written");
   assert(!/https?:\/\/cdn/.test(reportHtml), "the viewer must not depend on a CDN");
+  // Timestamps must be rendered in local time; raw ISO UTC next to a local
+  // batch id reads as two different moments.
+  assert(
+    !/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(reportHtml),
+    "case report must not print raw ISO timestamps",
+  );
+  assert(
+    /\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/.test(reportHtml),
+    "case report should print a readable local timestamp",
+  );
 
   const scan = await scanAll({ dataDir });
   assertEq(scan.length, 1);

@@ -118,6 +118,22 @@ function durationOf(result) {
   return null;
 }
 
+/**
+ * Records store ISO-8601 UTC, but a reader expects local time — and the batch
+ * id is local. Rendering raw UTC next to a local batch id made one run look
+ * like two different times.
+ */
+export function fmtLocal(iso) {
+  if (!iso) return "-";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return String(iso);
+  const p = (n) => String(n).padStart(2, "0");
+  return (
+    `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ` +
+    `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+  );
+}
+
 /** Per-case record: report.md + report.html. */
 export async function renderCase({ caseDir, result }) {
   const path = await nodePath();
@@ -136,7 +152,7 @@ export async function renderCase({ caseDir, result }) {
   lines.push(`- 用例描述：${result.description || "-"}`);
   lines.push(`- 环境：${result.env || "-"} · 执行者：${result.agent || "-"}`);
   lines.push(
-    `- 开始：${result.startedAt || "-"} · 结束：${result.finishedAt || "-"} · 耗时：${fmtMs(
+    `- 开始：${fmtLocal(result.startedAt)} · 结束：${fmtLocal(result.finishedAt)} · 耗时：${fmtMs(
       durationOf(result),
     )}`,
   );
@@ -244,8 +260,8 @@ export async function renderCase({ caseDir, result }) {
     <dt>结论说明</dt><dd>${esc(result.reason || "-")}</dd>
     <dt>批次 / 用例</dt><dd class="mono">${esc(result.batchId)} · ${esc(result.caseId)}</dd>
     <dt>环境 / 执行者</dt><dd>${esc(result.env || "-")} · ${esc(result.agent || "-")}</dd>
-    <dt>起止 / 耗时</dt><dd>${esc(result.startedAt || "-")} → ${esc(
-      result.finishedAt || "-",
+    <dt>起止 / 耗时</dt><dd>${esc(fmtLocal(result.startedAt))} → ${esc(
+      fmtLocal(result.finishedAt),
     )} · ${fmtMs(durationOf(result))}</dd>
     <dt>引擎</dt><dd class="mono">${esc(result.engine?.ego || "-")} · ${esc(
       result.engine?.jev || "-",
@@ -361,7 +377,7 @@ export async function renderBatch({ batchDir, batch, cases }) {
   md.push("");
   md.push(`- 标签：${batch.label || "未标注"}`);
   md.push(`- 环境：${batch.env || "-"} · 执行者：${batch.agent || "-"}`);
-  md.push(`- 开始：${batch.startedAt || "-"}`);
+  md.push(`- 开始：${fmtLocal(batch.startedAt)}`);
   md.push(
     `- 汇总：共 ${s.total} · 通过 ${s.pass} · 失败 ${s.fail} · 待人工 ${
       s.needHuman
@@ -393,7 +409,7 @@ export async function renderBatch({ batchDir, batch, cases }) {
     <dt>引擎</dt><dd class="mono">${esc(batch.engine?.ego || "-")} · ${esc(
       batch.engine?.jev || "-",
     )}</dd>
-    <dt>开始时间</dt><dd>${esc(batch.startedAt || "-")}</dd>
+    <dt>开始时间</dt><dd>${esc(fmtLocal(batch.startedAt))}</dd>
   </dl>
 </div>
 <h2>用例</h2>
@@ -492,7 +508,7 @@ export async function renderDashboard({ dataDir, writeIndexJson = true }) {
   <td>${bs.total}</td>
   <td>${bs.pass} / ${bs.fail} / ${bs.needHuman + bs.blocked}${bs.running ? ` / ${bs.running} 未完成` : ""}</td>
   <td>${fmtMs(bs.durationMs)}</td>
-  <td class="dim">${esc((b.batch.startedAt || "").slice(0, 19).replace("T", " "))}</td>
+  <td class="dim">${esc(fmtLocal(b.batch.startedAt))}</td>
 </tr>`;
     })
     .join("");
@@ -500,7 +516,7 @@ export async function renderDashboard({ dataDir, writeIndexJson = true }) {
   const body = `
 <h1>B 端 Web 测试记录</h1>
 <div class="sub">数据目录 <span class="mono">${esc(dataDir)}</span> ·
-生成于 ${esc(new Date().toISOString().slice(0, 19).replace("T", " "))}</div>
+生成于 ${esc(fmtLocal(new Date().toISOString()))}</div>
 <div class="card">${statBlock(s)}</div>
 
 <h2>批次（${batches.length}）</h2>
