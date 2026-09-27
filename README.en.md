@@ -26,8 +26,8 @@ each carry a real cost:
 | **This project** | Element decisions go to a small model; comprehension and judgement stay with the AI; the record is the tool's job | Requires macOS + ego lite + a Jev backend key |
 
 The underlying judgement: **"which element to click" and "what this page means"
-are different jobs.** The first is repetitive and structured — a cheap small
-model can decide it step by step. The second needs comprehension, and only that
+are different jobs.** The first is repetitive and structured — a small model can
+decide it step by step. The second needs comprehension, and only that
 justifies a large model. Separating them improves cost and stability at once.
 
 ## What it is
@@ -38,7 +38,7 @@ Three layers, each with one responsibility:
 |---|---|---|
 | Execution | ego-browser (provided by [ego lite](https://lite.ego.app/)) | Open pages, semantic snapshots, click / fill / select, screenshots, in-page requests, session reuse |
 | Decision | Jev (TypeSafe System One) | Per step: snapshot → number the interactive elements → one call picks the operation and its target. **It never reads content, never writes text, never looks at a screenshot** |
-| Orchestration | `scripts/lib/` in this repo | Working directory and records, verdicts and evidence, reports and dashboard, session reuse, cost accounting |
+| Orchestration | `scripts/lib/` in this repo | Working directory and records, verdicts and evidence, reports and dashboard, session reuse, usage accounting |
 
 The loop for one case:
 
@@ -49,8 +49,7 @@ create working dir → open entry URL → [ Jev decides → ego acts → record 
 
 Typical deployment: **DeepSeek v4.1 Flash orchestrates** (reading pages, judging,
 writing the script) while **Jev makes the per-step decisions** (which element to
-click). On that pairing one test — a single 3-step case — costs about **¥0.2**;
-the breakdown is in the measured-results section below.
+click). Measured usage for that pairing is in the results section below.
 
 ## Measured results
 
@@ -78,20 +77,18 @@ reproduced with `b2b-test selfcheck`.
 > was tiny (≈3.0K in per call); upstream measured ≈11K in per step at 20–120
 > candidates. Every case records its own usage.
 
-**Cost of one test** (reference pairing: DeepSeek v4.1 Flash orchestrating + Jev deciding)
+**Model pairing and measured usage** (DeepSeek v4.1 Flash orchestrating + Jev deciding)
 
 | Metric | Value |
 |---|---|
-| One test (a single 3-step case) | **≈ ¥0.2** |
-| Jev tokens for that case | 9,016 in / 1,963 out |
 | Orchestration model | DeepSeek v4.1 Flash |
 | Decision model | Jev (TypeSafe System One) |
+| Jev tokens for one 3-step case | 9,016 in / 1,963 out |
+| How it is recorded | call count and tokens go into the `jev` field of `result.json` |
 
-> Cost varies with flow length, candidate element count and backend pricing; ¥0.2
-> is the reference for one test on the pairing above. Each case records its own
-> Jev call count and tokens (the `jev` field of `result.json`) so you can convert
-> to your own rates. Note the split: **tokens and latency are measured by the
-> tool itself; ¥0.2 is a reference cost for this pairing.**
+> Usage scales with flow length and the number of candidate elements on the page.
+> These are **measurements recorded by the tool itself**, not estimates, and every
+> case keeps its own breakdown in the record.
 
 **Offline self-check** (built-in mock decider; no network, no token spend)
 
@@ -202,7 +199,7 @@ b2b-test report --open                              # open the dashboard
 
 | Command | Purpose |
 |---|---|
-| `b2b-test key check` | Show key source, backend and validity (costs no generation quota) |
+| `b2b-test key check` | Show key source, backend and validity (uses no generation quota) |
 | `b2b-test exec "<dir>" --junit` | Also emit `junit.xml` for CI |
 | `b2b-test exec "<dir>" --mock` | Run with the built-in mock decider (offline; for self-checking) |
 | `b2b-test ls [--limit N]` | List batches and per-case verdicts |

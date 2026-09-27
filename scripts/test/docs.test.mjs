@@ -29,12 +29,20 @@ test("the two READMEs stay structurally in sync", async () => {
   for (const [name, text, needle] of [
     ["README.md", zh, "9,016"],
     ["README.en.md", en, "9,016"],
-    ["README.md", zh, "¥0.2"],
-    ["README.en.md", en, "¥0.2"],
     ["README.md", zh, "DeepSeek v4.1 Flash"],
     ["README.en.md", en, "DeepSeek v4.1 Flash"],
   ]) {
     assert(text.includes(needle), `${name} must state ${needle}`);
+  }
+  // The project publishes measured usage only — no price claim. This guard
+  // exists because a cost figure was added and then deliberately removed.
+  for (const [name, text] of [
+    ["README.md", zh],
+    ["README.en.md", en],
+  ]) {
+    for (const banned of ["¥", "0.2 元", "2 毛", "$0.2"]) {
+      assert(!text.includes(banned), `${name} must not carry a price claim (${banned})`);
+    }
   }
   // Both must state the honest caveat about what drives token use.
   assert(zh.includes("候选元素"), "Chinese README must explain the token caveat");
