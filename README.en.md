@@ -47,6 +47,11 @@ create working dir → open entry URL → [ Jev decides → ego acts → record 
                    → AI verifies against page facts → write the verdict → render reports
 ```
 
+Typical deployment: **DeepSeek v4.1 Flash orchestrates** (reading pages, judging,
+writing the script) while **Jev makes the per-step decisions** (which element to
+click). On that pairing one test — a single 3-step case — costs about **¥0.2**;
+the breakdown is in the measured-results section below.
+
 ## Measured results
 
 The numbers below come from real runs of this project (macOS + ego lite + a real
@@ -72,6 +77,21 @@ reproduced with `b2b-test selfcheck`.
 > Token use scales with the number of candidate elements on the page. This page
 > was tiny (≈3.0K in per call); upstream measured ≈11K in per step at 20–120
 > candidates. Every case records its own usage.
+
+**Cost of one test** (reference pairing: DeepSeek v4.1 Flash orchestrating + Jev deciding)
+
+| Metric | Value |
+|---|---|
+| One test (a single 3-step case) | **≈ ¥0.2** |
+| Jev tokens for that case | 9,016 in / 1,963 out |
+| Orchestration model | DeepSeek v4.1 Flash |
+| Decision model | Jev (TypeSafe System One) |
+
+> Cost varies with flow length, candidate element count and backend pricing; ¥0.2
+> is the reference for one test on the pairing above. Each case records its own
+> Jev call count and tokens (the `jev` field of `result.json`) so you can convert
+> to your own rates. Note the split: **tokens and latency are measured by the
+> tool itself; ¥0.2 is a reference cost for this pairing.**
 
 **Offline self-check** (built-in mock decider; no network, no token spend)
 

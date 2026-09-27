@@ -29,8 +29,12 @@ test("the two READMEs stay structurally in sync", async () => {
   for (const [name, text, needle] of [
     ["README.md", zh, "9,016"],
     ["README.en.md", en, "9,016"],
+    ["README.md", zh, "¥0.2"],
+    ["README.en.md", en, "¥0.2"],
+    ["README.md", zh, "DeepSeek v4.1 Flash"],
+    ["README.en.md", en, "DeepSeek v4.1 Flash"],
   ]) {
-    assert(text.includes(needle), `${name} must state the measured token figure`);
+    assert(text.includes(needle), `${name} must state ${needle}`);
   }
   // Both must state the honest caveat about what drives token use.
   assert(zh.includes("候选元素"), "Chinese README must explain the token caveat");
