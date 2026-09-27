@@ -1,0 +1,1102 @@
+#!/bin/sh
+# b2b-test — B-end web testing on ego-browser + Jev.
+#
+# Portability rules (see references/portability.md):
+#   * POSIX sh only. No jq, no node, no python needed by this launcher:
+#     a clean Mac has none of those guaranteed.
+#   * No hard-coded user names, skill roots, or ego-lite versions. Everything
+#     is resolved at run time, so the repo works wherever it is cloned and for
+#     whichever Mac user runs it.
+#   * No agent-specific assumptions. Anything that can run a shell command can
+#     drive this CLI.
+
+set -u
+
+VERSION="0.1.0"
+SCHEMA="1"
+
+# ---------------------------------------------------------------- self locate
+_self="$0"
+while [ -h "$_self" ]; do
+  _dir=$(cd -P "$(dirname "$_self")" >/dev/null 2>&1 && pwd)
+  _link=$(readlink "$_self")
+  case "$_link" in
+    /*) _self="$_link" ;;
+    *) _self="$_dir/$_link" ;;
+  esac
+done
+BIN_DIR=$(cd -P "$(dirname "$_self")" >/dev/null 2>&1 && pwd)
+SKILL_ROOT=$(cd -P "$BIN_DIR/.." >/dev/null 2>&1 && pwd)
+
+HOME_DIR=${HOME:-}
+if [ -z "$HOME_DIR" ]; then
+  HOME_DIR=$(cd ~ >/dev/null 2>&1 && pwd)
+fi
+
+# ------------------------------------------------------------ config / paths
+CONFIG_FILE=${B2B_CONFIG:-$HOME_DIR/.config/b2b-web-test/config.env}
+JEV_SECRETS=${B2B_JEV_SECRETS:-$HOME_DIR/.config/ego-jev/secrets.env}
+
+# Capture environment-provided values first: an explicit env var must beat the
+# config file, which in turn beats the built-in default.
+ENV_DATA_DIR=${B2B_DATA_DIR:-${B2B_WEB_TEST_HOME:-}}
+ENV_AGENT=${B2B_AGENT:-}
+ENV_ENV_NAME=${B2B_ENV_NAME:-}
+ENV_SHOTS=${B2B_SHOTS:-}
+ENV_SESSION=${B2B_SESSION:-}
+ENV_MAX_STEPS=${B2B_MAX_STEPS:-}
+ENV_JEV_BACKEND=${B2B_JEV_BACKEND:-}
+ENV_JEV_KEY=${B2B_JEV_API_KEY:-}
+ENV_JEV_BASE=${B2B_JEV_BASE_URL:-}
+ENV_JEV_MODEL=${B2B_JEV_MODEL:-}
+
+if [ -f "$CONFIG_FILE" ]; then
+  # shellcheck disable=SC1090
+  . "$CONFIG_FILE"
+fi
+
+DATA_DIR=${ENV_DATA_DIR:-${B2B_DATA_DIR:-$HOME_DIR/.local/share/b2b-web-test}}
+AGENT=${ENV_AGENT:-${B2B_AGENT:-}}
+ENV_NAME=${ENV_ENV_NAME:-${B2B_ENV_NAME:-}}
+SHOTS=${ENV_SHOTS:-${B2B_SHOTS:-step}}
+SESSION_MODE=${ENV_SESSION:-${B2B_SESSION:-reuse}}
+MAX_STEPS=${ENV_MAX_STEPS:-${B2B_MAX_STEPS:-20}}
+BATCHES_ROOT=${B2B_BATCHES_ROOT:-$DATA_DIR/batches}
+
+# --------------------------------------------------------------- small utils
+say() { printf '%s\n' "$*"; }
+warn() { printf '警告：%s\n' "$*" >&2; }
+die() { printf '错误：%s\n' "$*" >&2; exit 1; }
+ok() { printf '  ✅ %s\n' "$*"; }
+bad() { printf '  ❌ %s\n' "$*"; }
+info() { printf '  ·  %s\n' "$*"; }
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+json_str() { # file key
+  [ -f "$1" ] || return 1
+  sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" | head -n 1
+}
+
+extract_var() { # file name
+  _f=$1
+  _n=$2
+  [ -f "$_f" ] || return 1
+  _line=$(grep -E "^[[:space:]]*(export[[:space:]]+)?$_n=" "$_f" 2>/dev/null | tail -n 1)
+  [ -n "$_line" ] || return 1
+  _val=${_line#*=}
+  case "$_val" in
+    \"*\") _val=${_val#\"}; _val=${_val%\"} ;;
+    \'*\') _val=${_val#\'}; _val=${_val%\'} ;;
+  esac
+  [ -n "$_val" ] || return 1
+  printf '%s' "$_val"
+}
+
+mask() { # never print a whole credential
+  _v=$1
+  _l=${#_v}
+  if [ "$_l" -le 6 ]; then
+    printf '****'
+  else
+    printf '%s****%s' "$(printf '%s' "$_v" | cut -c1-3)" "$(printf '%s' "$_v" | cut -c"$_l")"
+  fi
+}
+
+find_ego() {
+  if have ego-browser; then
+    command -v ego-browser
+    return 0
+  fi
+  for c in \
+    "$HOME_DIR/.local/bin/ego-browser" \
+    "$HOME_DIR/.local/share/ego/active_version_dir/Helpers/ego-browser"
+  do
+    if [ -x "$c" ]; then
+      printf '%s\n' "$c"
+      return 0
+    fi
+  done
+  return 1
+}
+
+ego_app_dir() {
+  _av="$HOME_DIR/.local/share/ego/active_version_dir"
+  if [ -e "$_av" ]; then
+    (cd -P "$_av" >/dev/null 2>&1 && pwd)
+  fi
+}
+
+detect_agent() {
+  if [ -n "${AGENT:-}" ]; then
+    printf '%s' "$AGENT"
+    return 0
+  fi
+  if [ -n "${AI_AGENT:-}" ]; then
+    printf '%s' "$AI_AGENT"
+    return 0
+  fi
+  if [ -n "${CODEX_HOME:-}" ] || [ -n "${CODEX_CI:-}" ]; then
+    printf 'codex'
+    return 0
+  fi
+  if [ -n "${CLAUDECODE:-}" ] || [ -n "${CLAUDE_CODE_ENTRYPOINT:-}" ]; then
+    printf 'claude-code'
+    return 0
+  fi
+  if [ -n "${CURSOR_AGENT:-}" ]; then
+    printf 'cursor-agent'
+    return 0
+  fi
+  if [ -n "${GEMINI_CLI:-}" ]; then
+    printf 'gemini-cli'
+    return 0
+  fi
+  _p=$(ps -o comm= -p "${PPID:-0}" 2>/dev/null | head -n 1 | sed 's#.*/##')
+  case "$_p" in
+    *codex*) printf 'codex' ;;
+    *claude*) printf 'claude-code' ;;
+    *cursor*|*Cursor*) printf 'cursor' ;;
+    *node*|*deno*|*bun*) printf 'node-agent' ;;
+    *) printf '' ;;
+  esac
+}
+
+resolve_jev() {
+  JEV_BACKEND=${ENV_JEV_BACKEND:-${B2B_JEV_BACKEND:-}}
+  JEV_KEY=${ENV_JEV_KEY:-${B2B_JEV_API_KEY:-}}
+  JEV_BASE=${ENV_JEV_BASE:-${B2B_JEV_BASE_URL:-}}
+  JEV_MODEL=${ENV_JEV_MODEL:-${B2B_JEV_MODEL:-}}
+  JEV_SOURCE=""
+  if [ -n "$JEV_KEY" ]; then
+    JEV_SOURCE="config/env"
+  elif [ -f "$JEV_SECRETS" ]; then
+    JEV_KEY=$(extract_var "$JEV_SECRETS" TYPESAFE_API_KEY || true)
+    if [ -n "$JEV_KEY" ]; then
+      JEV_SOURCE="$JEV_SECRETS"
+    else
+      JEV_KEY=$(extract_var "$JEV_SECRETS" AI_GATEWAY_API_KEY || true)
+      [ -n "$JEV_KEY" ] && JEV_SOURCE="$JEV_SECRETS (gateway)"
+    fi
+    if [ -z "$JEV_KEY" ]; then
+      JEV_KEY=$(extract_var "$JEV_SECRETS" OPENROUTER_API_KEY || true)
+      [ -n "$JEV_KEY" ] && JEV_SOURCE="$JEV_SECRETS (openrouter)"
+    fi
+    [ -n "$JEV_BASE" ] || JEV_BASE=$(extract_var "$JEV_SECRETS" TYPESAFE_BASE_URL || true)
+    [ -n "$JEV_MODEL" ] || JEV_MODEL=$(extract_var "$JEV_SECRETS" TYPESAFE_DEFAULT_MODEL || true)
+  fi
+  if [ -z "$JEV_BACKEND" ] && [ -n "$JEV_KEY" ]; then
+    case "$JEV_KEY" in
+      sk-or-*) JEV_BACKEND="openrouter" ;;
+      *) JEV_BACKEND="typesafe" ;;
+    esac
+  fi
+  if [ -z "$JEV_SOURCE" ] && [ -n "$JEV_KEY" ]; then
+    JEV_SOURCE="env"
+  fi
+}
+
+safe_path() {
+  case "$1" in
+    *\"*|*\\*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+new_batch_id() { # [label]
+  _label=$1
+  mkdir -p "$BATCHES_ROOT" 2>/dev/null || return 1
+  # Seconds matter: two batches in the same minute must still sort in the order
+  # they were created, so the id stays a usable chronological key.
+  _ts=$(date +%Y%m%d-%H%M%S)
+  _i=0
+  while [ "$_i" -lt 50 ]; do
+    _rnd=$(od -An -N2 -tu2 /dev/urandom 2>/dev/null | tr -d ' \n')
+    [ -n "$_rnd" ] || _rnd=${PPID:-1}
+    _hex=$(printf '%04x' "$_rnd" 2>/dev/null || printf '%04d' "$_i")
+    _id="$_ts-$_hex"
+    [ -n "$_label" ] && _id="$_id-$_label"
+    if mkdir "$BATCHES_ROOT/$_id" 2>/dev/null; then
+      printf '%s' "$_id"
+      return 0
+    fi
+    _i=$((_i + 1))
+  done
+  return 1
+}
+
+latest_batch() {
+  [ -d "$BATCHES_ROOT" ] || return 1
+  _l=$(ls -1 "$BATCHES_ROOT" 2>/dev/null | sort | tail -n 1)
+  [ -n "$_l" ] || return 1
+  printf '%s' "$_l"
+}
+
+next_case_seq() { # batchDir
+  _d=$1/cases
+  if [ -d "$_d" ]; then
+    _n=$(find "$_d" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
+  else
+    _n=0
+  fi
+  printf '%s' "$(( ${_n:-0} + 1 ))"
+}
+
+slugify() { # crude but predictable; JS does the authoritative version
+  printf '%s' "$1" \
+    | tr '[:upper:]' '[:lower:]' \
+    | tr -s ' 	' '-' \
+    | sed -e 's/[^0-9a-z一-龥-]//g' -e 's/-\{2,\}/-/g' -e 's/^-//' -e 's/-$//' \
+    | cut -c1-40
+}
+
+# ------------------------------------------------------------------ job i/o
+JOBDIR=""
+prepare_job_dir() {
+  _base=${TMPDIR:-/tmp}
+  JOBDIR="$_base/b2b-web-test-$$-$(date +%s)"
+  mkdir -p "$JOBDIR" || die "无法创建临时目录 $_base"
+  chmod 700 "$JOBDIR" 2>/dev/null || true
+}
+
+cleanup_job_dir() {
+  [ -n "$JOBDIR" ] || return 0
+  # job.env holds credentials; remove the whole scratch dir.
+  rm -rf "$JOBDIR" 2>/dev/null || true
+}
+trap 'cleanup_job_dir' EXIT INT TERM
+
+write_job_env() { # reads the JB_* variables
+  {
+    printf 'schema=%s\n' "$SCHEMA"
+    printf 'action=%s\n' "$JB_ACTION"
+    printf 'skillRoot=%s\n' "$SKILL_ROOT"
+    printf 'dataDir=%s\n' "$DATA_DIR"
+    printf 'batchDir=%s\n' "$JB_BATCH_DIR"
+    printf 'caseDir=%s\n' "${JB_CASE_DIR:-}"
+    printf 'batchId=%s\n' "$JB_BATCH_ID"
+    printf 'caseId=%s\n' "${JB_CASE_ID:-}"
+    printf 'caseSeq=%s\n' "${JB_CASE_SEQ:-1}"
+    printf 'slug=%s\n' "${JB_SLUG:-}"
+    printf 'url=%s\n' "${JB_URL:-}"
+    printf 'label=%s\n' "${JB_LABEL:-}"
+    printf 'envName=%s\n' "${JB_ENV_NAME:-}"
+    printf 'envSlug=%s\n' "${JB_ENV_SLUG:-}"
+    printf 'spaceName=%s\n' "${JB_SPACE_NAME:-}"
+    printf 'agent=%s\n' "${JB_AGENT:-}"
+    printf 'engineEgo=%s\n' "${JB_ENGINE_EGO:-}"
+    printf 'engineJev=%s\n' "${JB_ENGINE_JEV:-}"
+    printf 'planPath=%s\n' "${JB_PLAN:-}"
+    printf 'optionsShots=%s\n' "$SHOTS"
+    printf 'optionsSession=%s\n' "$SESSION_MODE"
+    printf 'optionsMaxSteps=%s\n' "$MAX_STEPS"
+    printf 'optionsMock=%s\n' "${JB_MOCK:-0}"
+    printf 'optionsJunit=%s\n' "${JB_JUNIT:-0}"
+    printf 'optionsPlanner=%s\n' "${JB_PLANNER:-}"
+    printf 'secretBackend=%s\n' "${JEV_BACKEND:-}"
+    printf 'secretApiKey=%s\n' "${JEV_KEY:-}"
+    printf 'secretBaseUrl=%s\n' "${JEV_BASE:-}"
+    printf 'secretModel=%s\n' "${JEV_MODEL:-}"
+    printf 'secretSource=%s\n' "${JEV_SOURCE:-}"
+  } > "$JOBDIR/job.env"
+  chmod 600 "$JOBDIR/job.env" 2>/dev/null || true
+  printf '%s' "${JB_DESCRIPTION:-}" > "$JOBDIR/description.txt"
+}
+
+run_job() {
+  _ego=$1
+  safe_path "$SKILL_ROOT" || die "技能路径里有引号或反斜杠，无法安全注入：$SKILL_ROOT"
+  safe_path "$JOBDIR" || die "临时目录路径不安全：$JOBDIR"
+  cat > "$JOBDIR/wrapper.mjs" <<EOF
+const { pathToFileURL } = await import("node:url");
+const { runFromJob } = await import(
+  pathToFileURL("$SKILL_ROOT/scripts/lib/context.mjs").href
+);
+await runFromJob({ jobDir: "$JOBDIR" });
+EOF
+  "$_ego" nodejs < "$JOBDIR/wrapper.mjs"
+}
+
+# ------------------------------------------------------------------- commands
+cmd_help() {
+  cat <<'USAGE'
+b2b-test — 用 ego-browser + Jev 做 B 端 Web 测试，每个用例留一份可回溯的记录
+
+用法：
+  b2b-test init [--yes]              初始化 ego lite / Jev 后端 / 配置，并跑一次离线自检
+  b2b-test doctor                    体检：环境、引擎、密钥、记录目录
+  b2b-test new "<用例描述>" --url <地址> [选项]
+                                     为这个用例建工作目录（执行前就建好）
+  b2b-test exec <用例目录> [--mock] [--junit] [--plan <文件>]
+                                     执行该用例，过程与结果写进它的目录
+  b2b-test selfcheck                 离线自检：不联网、不花 token，验证整条链路
+  b2b-test ls [--limit N]            列出批次与用例结论
+  b2b-test report [--open] [--junit] 重新生成可视化看板（HTML）
+  b2b-test batch new [--label 标签]  只建批次
+  b2b-test session list|close [env]  查看/关闭复用的浏览器会话
+  b2b-test prune [--keep N] [--days D] [--dry-run]
+                                     按批次清理旧记录
+  b2b-test version | help
+
+new 的选项：
+  --url <地址>        入口地址（必填）
+  --batch <批次号>    挂到指定批次（不填则新建批次）
+  --continue          挂到最近一个批次
+  --label <标签>      批次标签，如 v2.3.1 / 冒烟
+  --slug <名字>       用例目录名（默认从描述生成）
+  --env <环境名>      环境名，如 staging / uat
+  --out <目录>        本次记录的根目录（默认 ~/.local/share/b2b-web-test/batches）
+  --agent <名字>      记录执行者（不填则自动识别）
+  --junit             同时输出 junit.xml（CI 用）
+  --shots step|fail|off   过程截图策略，默认 step（每步一张）
+
+记录位置：默认 ~/.local/share/b2b-web-test/，可用 B2B_WEB_TEST_HOME 覆盖。
+批次目录：<根>/batches/<批次号>/cases/<序号-用例名>/
+USAGE
+}
+
+cmd_version() {
+  say "b2b-test $VERSION"
+  say "技能目录：$SKILL_ROOT"
+  _e=$(find_ego || true)
+  [ -n "$_e" ] && say "ego-browser：$_e" || say "ego-browser：未找到"
+}
+
+cmd_doctor() {
+  resolve_jev
+  _ego=$(find_ego || true)
+  _fail=0
+
+  say "环境体检"
+  _os=$(uname -s 2>/dev/null || echo unknown)
+  _arch=$(uname -m 2>/dev/null || echo unknown)
+  if [ "$_os" = "Darwin" ]; then
+    ok "macOS ${_arch} · $(sw_vers -productVersion 2>/dev/null || echo '?')"
+  else
+    bad "非 macOS（$_os）—— ego lite 目前只支持 macOS"
+    _fail=$((_fail + 1))
+  fi
+
+  if [ -n "$_ego" ]; then
+    ok "ego-browser：$_ego"
+    info "$("$_ego" --version 2>&1 | head -n 1)"
+  else
+    bad "找不到 ego-browser —— 先运行 b2b-test init"
+    _fail=$((_fail + 1))
+  fi
+
+  if [ -n "$_ego" ]; then
+    if "$_ego" nodejs -e '1' >/dev/null 2>&1; then
+      ok "ego-browser nodejs 运行时可用"
+    else
+      bad "ego-browser nodejs 运行时不可用"
+      _fail=$((_fail + 1))
+    fi
+  fi
+
+  _ver_ok=1
+  _vend="$SKILL_ROOT/scripts/vendored/jev-loop.mjs"
+  _prov="$SKILL_ROOT/scripts/vendored/PROVENANCE.json"
+  if [ -f "$_vend" ] && [ -f "$_prov" ]; then
+    _want=$(json_str "$_prov" sha256 || true)
+    _got=$(shasum -a 256 "$_vend" 2>/dev/null | awk '{print $1}')
+    if [ -n "$_want" ] && [ "$_want" = "$_got" ]; then
+      ok "Jev 循环完整（sha256 一致）"
+    else
+      warn "Jev 循环与 PROVENANCE.json 不一致（可能被本地改过）"
+      _ver_ok=0
+    fi
+  else
+    bad "缺少 vendored/jev-loop.mjs"
+    _fail=$((_fail + 1))
+  fi
+
+  if [ -n "$JEV_KEY" ]; then
+    ok "Jev 后端：${JEV_BACKEND:-auto} · 密钥 $(mask "$JEV_KEY")"
+    info "来源：$JEV_SOURCE"
+    [ -n "$JEV_MODEL" ] && info "模型：$JEV_MODEL"
+  else
+    warn "没有找到 Jev 密钥（TYPESAFE_API_KEY / AI_GATEWAY_API_KEY / OPENROUTER_API_KEY）"
+    info "离线自检仍可运行：b2b-test selfcheck"
+    _fail=$((_fail + 1))
+  fi
+
+  if mkdir -p "$DATA_DIR" 2>/dev/null && [ -w "$DATA_DIR" ]; then
+    ok "记录目录可写：$DATA_DIR"
+  else
+    bad "记录目录不可写：$DATA_DIR"
+    _fail=$((_fail + 1))
+  fi
+
+  if [ -f "$CONFIG_FILE" ]; then
+    ok "配置文件：$CONFIG_FILE"
+  else
+    info "还没有配置文件（b2b-test init 会生成）：$CONFIG_FILE"
+  fi
+
+  case ":$PATH:" in
+    *":$HOME_DIR/.local/bin:"*) ok "PATH 含 ~/.local/bin" ;;
+    *) warn "PATH 不含 ~/.local/bin（ego-browser 可能因此找不到）" ;;
+  esac
+
+  _a=$(detect_agent || true)
+  [ -n "$_a" ] && ok "识别到的执行者：$_a" || info "未识别出执行者（可用 --agent 指定）"
+
+  [ "$_ver_ok" = "1" ] || _fail=$((_fail + 1))
+  say ""
+  if [ "$_fail" -eq 0 ]; then
+    say "体检通过。"
+    return 0
+  fi
+  say "有 $_fail 项需要处理（见上面 ❌ / 警告）。"
+  return 1
+}
+
+cmd_init() {
+  _assume_no=0
+  _skip_selfcheck=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --yes|-y) _assume_no=1; shift ;;
+      --no-selfcheck) _skip_selfcheck=1; shift ;;
+      *) shift ;;
+    esac
+  done
+
+  say "初始化 b2b-web-test"
+  say ""
+
+  _os=$(uname -s 2>/dev/null || echo unknown)
+  if [ "$_os" != "Darwin" ]; then
+    warn "ego lite 目前只支持 macOS；当前系统 $_os"
+  fi
+
+  _ego=$(find_ego || true)
+  _app=$(ego_app_dir || true)
+
+  if [ -n "$_ego" ] && [ -n "$_app" ]; then
+    ok "ego lite 已安装：$_app"
+    ok "ego-browser：$_ego"
+  elif [ -n "$_ego" ]; then
+    ok "ego-browser 可用：$_ego"
+    info "没有找到 active_version_dir（可能不是标准安装位置）"
+  else
+    bad "没有检测到 ego lite"
+    say ""
+    say "需要先安装 ego lite（提供 ego-browser 命令）："
+    say "  方式一（推荐）：打开 https://lite.ego.app/ 下载安装，完成首次引导"
+    say "  方式二：让本工具自动下载安装："
+    say "      b2b-test init --install-ego"
+    say ""
+    say "安装后重新运行 b2b-test init。"
+    return 1
+  fi
+
+  if [ -n "$_ego" ]; then
+    if "$_ego" nodejs -e '1' >/dev/null 2>&1; then
+      ok "运行时可用"
+    else
+      bad "ego-browser nodejs 运行时不可用，请先打开 ego lite 完成引导"
+      return 1
+    fi
+  fi
+
+  resolve_jev
+  if [ -n "$JEV_KEY" ]; then
+    ok "Jev 后端：${JEV_BACKEND:-auto} · 密钥 $(mask "$JEV_KEY")（来自 $JEV_SOURCE）"
+  else
+    warn "没有找到 Jev 决策后端的密钥"
+    say ""
+    say "Jev 需要一个后端密钥（三选一），写入下面任一位置即可："
+    say "  A. 复用已有 ego-jev 配置：$JEV_SECRETS"
+    say "       在里面放 export TYPESAFE_API_KEY=..."
+    say "  B. 写在 b2b-web-test 自己的配置：$CONFIG_FILE"
+    say "       在里面放 B2B_JEV_API_KEY=..."
+    say ""
+    say "没有密钥时仍可用 b2b-test selfcheck 验证链路（用内置 mock 决策器，不联网、不花 token）。"
+  fi
+
+  # config file
+  if [ -f "$CONFIG_FILE" ]; then
+    ok "配置文件已存在：$CONFIG_FILE"
+  else
+    _cdir=$(dirname "$CONFIG_FILE")
+    mkdir -p "$_cdir" || die "无法创建 $_cdir"
+    cat > "$CONFIG_FILE" <<EOF
+# b2b-web-test 配置（由 b2b-test init 生成）
+# 这里只放路径与策略；密钥建议留在 ego-jev 的 secrets.env 里，或用 B2B_JEV_API_KEY。
+
+# 记录根目录
+B2B_DATA_DIR=$DATA_DIR
+
+# 过程截图：step（每步一张，默认）/ fail（只留失败）/ off
+B2B_SHOTS=$SHOTS
+
+# 会话策略：reuse（复用登录态，默认）/ fresh（每次干净会话）
+B2B_SESSION=$SESSION_MODE
+
+# 单个用例里 Jev 循环的最大步数
+B2B_MAX_STEPS=$MAX_STEPS
+
+# 环境与执行者标签（可留空）
+B2B_ENV_NAME=${ENV_NAME:-}
+B2B_AGENT=${AGENT:-}
+
+# 如果不想用 ego-jev 的 secrets.env，在这里给 Jev 后端：
+# B2B_JEV_API_KEY=
+# B2B_JEV_BACKEND=typesafe
+# B2B_JEV_BASE_URL=
+# B2B_JEV_MODEL=
+EOF
+    chmod 600 "$CONFIG_FILE" 2>/dev/null || true
+    ok "已写入配置：$CONFIG_FILE"
+  fi
+
+  case ":$PATH:" in
+    *":$HOME_DIR/.local/bin:"*) ;;
+    *) warn "PATH 不含 ~/.local/bin；如需固定，可在 shell 配置里加：export PATH=\"\$HOME/.local/bin:\$PATH\"" ;;
+  esac
+
+  say ""
+  say "体检："
+  cmd_doctor || true
+
+  if [ "$_skip_selfcheck" = "0" ]; then
+    say ""
+    say "离线自检（不联网、不花 token）："
+    if cmd_selfcheck; then
+      say ""
+      ok "初始化完成。下一步："
+      say "    b2b-test new \"你的用例描述\" --url https://your-app.example.com"
+      say "    b2b-test exec <上面输出的用例目录>"
+    else
+      say ""
+      bad "离线自检失败，请把上面的输出发给我"
+      return 1
+    fi
+  fi
+  return 0
+}
+
+cmd_new() {
+  _desc=""
+  _url=""
+  _slug=""
+  _batch=""
+  _label=""
+  _envname=${ENV_NAME:-}
+  _out=""
+  _agent=${AGENT:-}
+  _mock=0
+  _junit=0
+  _cont=0
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --url) _url=${2:-}; shift 2 ;;
+      --url=*) _url=${1#*=}; shift ;;
+      --slug) _slug=${2:-}; shift 2 ;;
+      --slug=*) _slug=${1#*=}; shift ;;
+      --batch) _batch=${2:-}; shift 2 ;;
+      --batch=*) _batch=${1#*=}; shift ;;
+      --label) _label=${2:-}; shift 2 ;;
+      --label=*) _label=${1#*=}; shift ;;
+      --env) _envname=${2:-}; shift 2 ;;
+      --env=*) _envname=${1#*=}; shift ;;
+      --out) _out=${2:-}; shift 2 ;;
+      --out=*) _out=${1#*=}; shift ;;
+      --agent) _agent=${2:-}; shift 2 ;;
+      --agent=*) _agent=${1#*=}; shift ;;
+      --mock) _mock=1; shift ;;
+      --junit) _junit=1; shift ;;
+      --continue) _cont=1; shift ;;
+      --) shift; break ;;
+      -*) die "未知选项：$1" ;;
+      *) [ -z "$_desc" ] && _desc=$1; shift ;;
+    esac
+  done
+  [ $# -gt 0 ] && [ -z "$_desc" ] && _desc=$1
+
+  [ -n "$_url" ] || die "缺少 --url（入口地址）"
+  [ -n "$_desc" ] || die "缺少用例描述，例如： b2b-test new \"登录后新建订单并确认成功\" --url https://..."
+
+  _ego=$(find_ego || true)
+  [ -n "$_ego" ] || die "找不到 ego-browser，请先运行 b2b-test init"
+
+  resolve_jev
+  [ -n "$_agent" ] || _agent=$(detect_agent || true)
+  [ -n "$_agent" ] || _agent="unspecified-agent"
+
+  [ -n "$_out" ] && BATCHES_ROOT="$_out"
+  mkdir -p "$BATCHES_ROOT" || die "无法创建记录目录：$BATCHES_ROOT"
+
+  _label_slug=""
+  [ -n "$_label" ] && _label_slug=$(slugify "$_label")
+
+  if [ -n "$_batch" ]; then
+    _bdir="$BATCHES_ROOT/$_batch"
+    if [ ! -d "$_bdir" ]; then
+      mkdir -p "$_bdir" || die "无法创建批次目录：$_bdir"
+      say "新建批次：$_batch"
+    fi
+  elif [ "$_cont" = "1" ]; then
+    _b=$(latest_batch || true)
+    if [ -n "$_b" ]; then
+      _batch=$_b
+      _bdir="$BATCHES_ROOT/$_b"
+      say "续用批次：$_batch"
+    else
+      _batch=$(new_batch_id "$_label_slug") || die "无法生成批次号"
+      _bdir="$BATCHES_ROOT/$_batch"
+      say "新建批次：$_batch"
+    fi
+  else
+    _batch=$(new_batch_id "$_label_slug") || die "无法生成批次号"
+    _bdir="$BATCHES_ROOT/$_batch"
+    say "新建批次：$_batch"
+  fi
+
+  [ -n "$_slug" ] || _slug=$(slugify "$_desc")
+  [ -n "$_slug" ] || _slug="case"
+
+  _seq=$(next_case_seq "$_bdir")
+  _envslug=""
+  if [ -n "$_envname" ]; then
+    _envslug=$(slugify "$_envname")
+  fi
+
+  prepare_job_dir
+  JB_ACTION="init"
+  JB_BATCH_DIR="$_bdir"
+  JB_BATCH_ID="$_batch"
+  JB_CASE_SEQ="$_seq"
+  JB_SLUG="$_slug"
+  JB_URL="$_url"
+  JB_LABEL="$(printf '%s' "$_label" | tr -d '\n')"
+  JB_ENV_NAME="$_envname"
+  JB_ENV_SLUG="$_envslug"
+  JB_AGENT="$_agent"
+  JB_ENGINE_EGO=$("$_ego" --version 2>&1 | head -n 1 | tr -d '\n')
+  JB_ENGINE_JEV="${JEV_BACKEND:-}${JEV_MODEL:+ ($JEV_MODEL)}"
+  JB_DESCRIPTION="$_desc"
+  JB_MOCK="$_mock"
+  JB_JUNIT="$_junit"
+  JB_PLANNER="$_agent"
+  write_job_env
+
+  # The ego runtime delivers the script's stdout on fd 2, so capture both.
+  _out_txt=$(run_job "$_ego" 2>&1)
+  _casedir=$(printf '%s\n' "$_out_txt" | sed -n 's/^B2B_CASE_DIR=//p' | head -n 1)
+  [ -n "$_casedir" ] || {
+    printf '%s\n' "$_out_txt" >&2
+    die "没有拿到用例目录"
+  }
+
+  say ""
+  say "用例工作目录已就绪："
+  say "  $_casedir"
+  say ""
+  say "接下来："
+  say "  1) 打开并补全计划脚本：$_casedir/plan.mjs"
+  say "     （记得同步填一下 plan.md 里的步骤与判定标准）"
+  say "  2) 执行： b2b-test exec \"$_casedir\""
+  say ""
+  say "记录内容：case.md（用例）、plan.md（计划）、steps.jsonl（时间线）、"
+  say "          shots/（过程截图）、result.json（结论）、report.md/html（报告）"
+}
+
+cmd_exec() {
+  _dir=""
+  _plan=""
+  _mock=0
+  _junit=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --plan) _plan=${2:-}; shift 2 ;;
+      --plan=*) _plan=${1#*=}; shift ;;
+      --mock) _mock=1; shift ;;
+      --junit) _junit=1; shift ;;
+      -*) die "未知选项：$1" ;;
+      *) [ -z "$_dir" ] && _dir=$1; shift ;;
+    esac
+  done
+  [ -n "$_dir" ] || die "用法：b2b-test exec <用例目录>"
+  [ -d "$_dir" ] || die "用例目录不存在：$_dir"
+  _dir=$(cd -P "$_dir" >/dev/null 2>&1 && pwd)
+
+  _ego=$(find_ego || true)
+  [ -n "$_ego" ] || die "找不到 ego-browser，请先运行 b2b-test init"
+  resolve_jev
+
+  _agent=$(detect_agent || true)
+  [ -n "$_agent" ] || _agent="unspecified-agent"
+
+  prepare_job_dir
+  JB_ACTION="exec"
+  JB_CASE_DIR="$_dir"
+  JB_BATCH_DIR="$(cd -P "$_dir/../.." >/dev/null 2>&1 && pwd)"
+  JB_BATCH_ID=$(json_str "$_dir/result.json" batchId || true)
+  JB_SLUG=$(json_str "$_dir/result.json" slug || true)
+  JB_AGENT="$_agent"
+  JB_PLAN="${_plan:-$_dir/plan.mjs}"
+  JB_MOCK="$_mock"
+  JB_JUNIT="$_junit"
+  JB_PLANNER="$_agent"
+  JB_DESCRIPTION=""
+  write_job_env
+
+  say "执行用例：$_dir"
+  say ""
+  run_job "$_ego" || true
+  say ""
+
+  _verdict=$(json_str "$_dir/result.json" verdict || true)
+  _reason=$(json_str "$_dir/result.json" reason || true)
+  case "$_verdict" in
+    pass) say "结论：通过 ✅" ;;
+    fail) say "结论：失败 ❌" ;;
+    error) say "结论：执行异常 ❌" ;;
+    need-human) say "结论：需要人工介入 ⏸" ;;
+    blocked) say "结论：受阻 ⚠️" ;;
+    running|"") say "结论：未完成（计划脚本没有给出结论）" ;;
+    *) say "结论：$_verdict" ;;
+  esac
+  [ -n "$_reason" ] && say "说明：$_reason"
+  say "记录：$_dir/report.md"
+
+  case "$_verdict" in
+    pass) exit 0 ;;
+    need-human) exit 2 ;;
+    blocked) exit 3 ;;
+    fail|error) exit 1 ;;
+    *) exit 4 ;;
+  esac
+}
+
+cmd_selfcheck() {
+  _ego=$(find_ego || true)
+  [ -n "$_ego" ] || die "找不到 ego-browser，请先运行 b2b-test init"
+
+  _fixture="$SKILL_ROOT/assets/fixtures/selfcheck-form.html"
+  [ -f "$_fixture" ] || die "缺少自检页面：$_fixture"
+  safe_path "$_fixture" || die "技能路径含引号/反斜杠，无法安全构造 file:// 地址"
+
+  say "离线自检：本机页面 + mock 决策器（不联网、不花 token）"
+
+  _agent="selfcheck"
+  _desc="离线自检：打开本地表单，填写姓名与邮箱，提交后确认出现成功提示"
+  _url="file://$_fixture"
+
+  # Dedicated batch so the evidence is easy to find and safe to delete.
+  _batch=$(new_batch_id "selfcheck") || die "无法生成批次号"
+  _bdir="$BATCHES_ROOT/$_batch"
+  mkdir -p "$_bdir" || die "无法创建批次目录"
+
+  prepare_job_dir
+  JB_ACTION="init"
+  JB_BATCH_DIR="$_bdir"
+  JB_BATCH_ID="$_batch"
+  JB_CASE_SEQ="1"
+  JB_SLUG="selfcheck"
+  JB_URL="$_url"
+  JB_LABEL="selfcheck"
+  JB_ENV_NAME="offline"
+  JB_ENV_SLUG="offline"
+  JB_AGENT="$_agent"
+  JB_ENGINE_EGO=$("$_ego" --version 2>&1 | head -n 1 | tr -d '\n')
+  JB_ENGINE_JEV="mock"
+  JB_DESCRIPTION="$_desc"
+  JB_MOCK="1"
+  JB_PLANNER="selfcheck"
+  write_job_env
+
+  _out_txt=$(run_job "$_ego" 2>&1)
+  _casedir=$(printf '%s\n' "$_out_txt" | sed -n 's/^B2B_CASE_DIR=//p' | head -n 1)
+  [ -n "$_casedir" ] || {
+    printf '%s\n' "$_out_txt" >&2
+    die "自检没有拿到用例目录"
+  }
+
+  cp "$SKILL_ROOT/assets/examples/selfcheck-plan.mjs" "$_casedir/plan.mjs" || die "无法写入自检计划"
+
+  prepare_job_dir
+  JB_ACTION="exec"
+  JB_CASE_DIR="$_casedir"
+  JB_BATCH_DIR="$_bdir"
+  JB_BATCH_ID="$_batch"
+  JB_SLUG="selfcheck"
+  JB_AGENT="$_agent"
+  JB_ENGINE_JEV="mock"
+  JB_PLAN="$_casedir/plan.mjs"
+  JB_MOCK="1"
+  JB_PLANNER="selfcheck"
+  JB_DESCRIPTION=""
+  write_job_env
+
+  run_job "$_ego" || true
+
+  _verdict=$(json_str "$_casedir/result.json" verdict || true)
+  _steps=$(wc -l < "$_casedir/steps.jsonl" 2>/dev/null | tr -d ' ')
+  _shots=$(find "$_casedir/shots" -type f 2>/dev/null | wc -l | tr -d ' ')
+  say ""
+  if [ "$_verdict" = "pass" ]; then
+    ok "自检通过（步骤 ${_steps:-?}，截图 ${_shots:-0}）"
+    say "   记录：$_casedir/report.md"
+    say "   看板：$DATA_DIR/reports/index.html"
+    return 0
+  fi
+  bad "自检未通过（verdict=${_verdict:-unknown}）"
+  say "   记录：$_casedir"
+  return 1
+}
+
+cmd_test() {
+  _ego=$(find_ego || true)
+  safe_path "$SKILL_ROOT" || die "技能路径含引号/反斜杠，无法安全注入"
+  say "代码自测（纯逻辑，不开浏览器、不联网）"
+  say ""
+  if [ -n "$_ego" ]; then
+    prepare_job_dir
+    cat > "$JOBDIR/run-tests.mjs" <<EOF
+const { pathToFileURL } = await import("node:url");
+await import(pathToFileURL("$SKILL_ROOT/scripts/test/run.mjs").href);
+EOF
+    "$_ego" nodejs < "$JOBDIR/run-tests.mjs"
+    return $?
+  fi
+  if have node; then
+    node "$SKILL_ROOT/scripts/test/run.mjs"
+    return $?
+  fi
+  die "需要 ego-browser 或 node 才能运行自测"
+}
+
+cmd_ls() {
+  _limit=20
+  _want_batch=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --limit) _limit=${2:-20}; shift 2 ;;
+      --limit=*) _limit=${1#*=}; shift ;;
+      --batch) _want_batch=${2:-}; shift 2 ;;
+      --batch=*) _want_batch=${1#*=}; shift ;;
+      *) shift ;;
+    esac
+  done
+  [ -d "$BATCHES_ROOT" ] || { say "还没有记录（$BATCHES_ROOT 不存在）"; return 0; }
+
+  say "记录根目录：$DATA_DIR"
+  say ""
+  say "批次 | 标签 | 用例 | 通过 | 失败 | 未完成 | 时间"
+  _n=0
+  for _b in $(ls -1 "$BATCHES_ROOT" 2>/dev/null | sort -r); do
+    if [ -n "$_want_batch" ] && [ "$_want_batch" != "$_b" ]; then
+      continue
+    fi
+    _n=$((_n + 1))
+    [ "$_n" -gt "$_limit" ] && break
+    _bj="$BATCHES_ROOT/$_b/batch.json"
+    _label=$(json_str "$_bj" label || true)
+    _total=0
+    _pass=0
+    _fail=0
+    _pending=0
+    if [ -d "$BATCHES_ROOT/$_b/cases" ]; then
+      for _c in "$BATCHES_ROOT/$_b/cases"/*; do
+        [ -d "$_c" ] || continue
+        _total=$((_total + 1))
+        _v=$(json_str "$_c/result.json" verdict || true)
+        case "$_v" in
+          pass) _pass=$((_pass + 1)) ;;
+          fail|error) _fail=$((_fail + 1)) ;;
+          running|"") _pending=$((_pending + 1)) ;;
+        esac
+      done
+    fi
+    _ts=$(printf '%s' "$_b" | cut -c1-15)
+    say "$_b | ${_label:--} | $_total | $_pass | $_fail | $_pending | $_ts"
+  done
+  [ "$_n" -eq 0 ] && say "（没有匹配的记录）"
+  say ""
+  say "看板：$DATA_DIR/reports/index.html"
+}
+
+cmd_report() {
+  _open=0
+  _junit=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --open) _open=1; shift ;;
+      --junit) _junit=1; shift ;;
+      *) shift ;;
+    esac
+  done
+  _ego=$(find_ego || true)
+
+  if [ -n "$_ego" ]; then
+    prepare_job_dir
+    JB_ACTION="report"
+    JB_BATCH_DIR="$DATA_DIR/batches"
+    JB_BATCH_ID=""
+    JB_DESCRIPTION=""
+    write_job_env
+    run_job "$_ego" >/dev/null 2>&1 || true
+  fi
+
+  _idx="$DATA_DIR/reports/index.html"
+  [ -f "$_idx" ] || die "还没有可生成的看板（先跑一条用例）"
+  say "看板：$_idx"
+  if [ "$_open" = "1" ]; then
+    if have open; then
+      open "$_idx"
+    else
+      say "（没有 open 命令，请手动打开）"
+    fi
+  fi
+}
+
+cmd_batch() {
+  _sub=${1:-}
+  shift 2>/dev/null || true
+  case "$_sub" in
+    new)
+      _label=""
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          --label) _label=${2:-}; shift 2 ;;
+          --label=*) _label=${1#*=}; shift ;;
+          *) shift ;;
+        esac
+      done
+      mkdir -p "$BATCHES_ROOT" || die "无法创建 $BATCHES_ROOT"
+      _ls=""
+      [ -n "$_label" ] && _ls=$(slugify "$_label")
+      _id=$(new_batch_id "$_ls") || die "无法生成批次号"
+      say "批次号：$_id"
+      say "目录：$BATCHES_ROOT/$_id"
+      say ""
+      say "把用例挂进这个批次："
+      say "  b2b-test new \"用例描述\" --url <地址> --batch $_id"
+      ;;
+    ""|--help|-h)
+      say "用法：b2b-test batch new [--label 标签]"
+      ;;
+    *)
+      die "未知子命令：batch $_sub"
+      ;;
+  esac
+}
+
+cmd_session() {
+  _sub=${1:-list}
+  shift 2>/dev/null || true
+  _sdir="$DATA_DIR/spaces"
+  case "$_sub" in
+    list)
+      if [ ! -d "$_sdir" ]; then
+        say "还没有复用中的会话。"
+        return 0
+      fi
+      say "复用的浏览器会话（登录态）："
+      for _f in "$_sdir"/*.json; do
+        [ -f "$_f" ] || continue
+        _slug=$(basename "$_f" .json)
+        _sid=$(json_str "$_f" spaceId || true)
+        _used=$(json_str "$_f" lastUsedAt || true)
+        say "  $_slug  spaceId=$_sid  最近使用=$_used"
+      done
+      say ""
+      say "这些会话会被自动复用，从而不必重复登录。"
+      say "用 b2b-test session close <环境名> 关闭并清除。"
+      ;;
+    close)
+      _which=${1:-}
+      [ -n "$_which" ] || die "用法：b2b-test session close <环境名>（见 b2b-test session list）"
+      _f="$_sdir/$_which.json"
+      [ -f "$_f" ] || die "找不到会话：$_which"
+      _sid=$(json_str "$_f" spaceId || true)
+      _ego=$(find_ego || true)
+      if [ -n "$_ego" ] && [ -n "$_sid" ]; then
+        prepare_job_dir
+        cat > "$JOBDIR/close.mjs" <<EOF
+const t = await taskSpace($_sid);
+await t.finish({ keep: [] });
+console.log("closed");
+EOF
+        "$_ego" nodejs < "$JOBDIR/close.mjs" >/dev/null 2>&1 || warn "关闭空间时出错（可能已经不存在）"
+      fi
+      rm -f "$_f"
+      ok "已关闭并清除会话：$_which"
+      ;;
+    ""|--help|-h)
+      say "用法：b2b-test session list | b2b-test session close <环境名>"
+      ;;
+    *)
+      die "未知子命令：session $_sub"
+      ;;
+  esac
+}
+
+cmd_prune() {
+  _keep=10
+  _days=0
+  _dry=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --keep) _keep=${2:-10}; shift 2 ;;
+      --keep=*) _keep=${1#*=}; shift ;;
+      --days) _days=${2:-0}; shift 2 ;;
+      --days=*) _days=${1#*=}; shift ;;
+      --dry-run) _dry=1; shift ;;
+      *) shift ;;
+    esac
+  done
+  [ -d "$BATCHES_ROOT" ] || { say "还没有记录，无需清理。"; return 0; }
+
+  _all=$(ls -1 "$BATCHES_ROOT" 2>/dev/null | sort -r)
+  _i=0
+  _removed=0
+  for _b in $_all; do
+    _i=$((_i + 1))
+    _drop=0
+    [ "$_i" -gt "$_keep" ] && _drop=1
+    if [ "$_days" -gt 0 ] 2>/dev/null; then
+      _ts=$(printf '%s' "$_b" | cut -c1-8)
+      _now=$(date +%Y%m%d)
+      _age_days=$(( ( $(date -j -f %Y%m%d "$_now" +%s 2>/dev/null || date +%s) - $(date -j -f %Y%m%d "$_ts" +%s 2>/dev/null || date +%s) ) / 86400 ))
+      [ "$_age_days" -gt "${_days:-0}" ] && _drop=1
+    fi
+    if [ "$_drop" = "1" ]; then
+      if [ "$_dry" = "1" ]; then
+        say "（演练）将删除批次：$_b"
+      else
+        rm -rf "$BATCHES_ROOT/$_b"
+        say "已删除批次：$_b"
+      fi
+      _removed=$((_removed + 1))
+    fi
+  done
+  say "共处理 $_removed 个批次（保留最近 ${_keep} 个）。"
+  [ "$_dry" = "0" ] && cmd_report >/dev/null 2>&1 || true
+}
+
+# ----------------------------------------------------------------------- main
+cmd=${1:-help}
+shift 2>/dev/null || true
+
+case "$cmd" in
+  init) cmd_init "$@" ;;
+  doctor) cmd_doctor "$@" ;;
+  new) cmd_new "$@" ;;
+  exec) cmd_exec "$@" ;;
+  selfcheck) cmd_selfcheck ;;
+  test|selftest) cmd_test ;;
+  ls|list) cmd_ls "$@" ;;
+  report) cmd_report "$@" ;;
+  batch) cmd_batch "$@" ;;
+  session) cmd_session "$@" ;;
+  prune) cmd_prune "$@" ;;
+  version|-v|--version) cmd_version ;;
+  help|-h|--help) cmd_help ;;
+  *) die "未知命令：$cmd（用 b2b-test help 查看用法）" ;;
+esac
