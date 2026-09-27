@@ -59,6 +59,40 @@
 需要**人工**介入、工具不会替你做的三件事：ego lite 首次 GUI 引导、SSO/短信/MFA 登录、
 Jev 后端账号注册。
 
+### 第一步：拿到一个 Jev 密钥
+
+⚠️ **这一步只能你自己来**——注册账号需要邮箱、可能还要绑卡，工具无法代劳。
+拿到之后，剩下的都交给一条命令。
+
+**1. 拿密钥（三选一，最快是第 1 家）**
+
+| 选 | 去哪 | 怎么做 |
+|---|---|---|
+| ① OpenRouter（推荐） | <https://openrouter.ai/settings/keys> | 注册 → 点 **Create Key** → 复制形如 `sk-or-v1-xxxx` 的串 |
+| ② TypeSafe | <https://typesafe.ai/> | 注册 → 在控制台复制 API Key |
+| ③ Vercel AI Gateway | <https://vercel.com/dashboard> | 打开 AI Gateway → 生成 API Key |
+
+**2. 粘进去（不用手改任何文件）**
+
+```sh
+b2b-test key
+```
+
+它会问你选哪一家 → 让你粘贴密钥（**输入不回显**）→ 自动判断后端 → 写入
+`~/.config/b2b-web-test/config.env`（权限 `0600`）→ **立刻联网验证**这笔密钥是否被接受。
+失败会直接告诉你原因（密钥不全 / 被拒绝 / 网络需要代理）。
+
+粘贴时连 `export XXX_API_KEY="..."` 一起复制也没关系，它会自动剥掉变量名和引号。
+
+**3. 随时复查**
+
+```sh
+b2b-test key check     # 当前密钥来源、后端、是否有效
+```
+
+> 已经有 `~/.config/ego-jev/secrets.env`（另一个技能写的）也不用重复配置——
+> 本工具会直接复用，并用 `b2b-test key check` 显示它来自哪里。
+
 ## 安装
 
 ```sh

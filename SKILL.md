@@ -29,6 +29,9 @@ metadata:
 # 0) 首次：初始化（装 ego lite、配 Jev 后端、跑离线自检）
 b2b-test init
 
+#    如果 init 提示缺少 Jev 密钥，运行这一条，按提示粘贴即可（会自动验证）
+b2b-test key
+
 # 1) 为一条用例建工作目录（执行前就建好）
 b2b-test new "登录后新建订单，确认列表出现该订单" --url https://crm.example.com --label 冒烟
 
