@@ -105,3 +105,24 @@ test("shell scripts brace every variable followed by a wide character", async ()
   }
   assert(hits.length === 0, `\n     ${hits.join("\n     ")}`);
 });
+
+test("shell scripts avoid GNU-only sed/grep extensions", async () => {
+  // macOS ships BSD sed and BSD grep. `\|` and `\+` in a basic regex are GNU
+  // extensions that BSD sed treats as literals — it fails silently, which is
+  // exactly how a "working" cleanup step keeps a stray quote and then makes a
+  // backend guess wrong.
+  const path = await nodePath();
+  const targets = ["bin/b2b-test", "install.sh", "uninstall.sh"];
+  const hits = [];
+  for (const rel of targets) {
+    const text = await readText(path.join(SKILL_ROOT, rel));
+    text.split("\n").forEach((line, i) => {
+      if (/^\s*#/.test(line)) return;
+      const badSed = /sed\b[^|]*[^\\]\\[|+?]/.test(line);
+      const badGrep = /grep\b[^|]*-P\b/.test(line);
+      const badSedR = /sed\s+-r\b/.test(line);
+      if (badSed || badGrep || badSedR) hits.push(`${rel}:${i + 1}: ${line.trim().slice(0, 90)}`);
+    });
+  }
+  assert(hits.length === 0, `\n     ${hits.join("\n     ")}`);
+});

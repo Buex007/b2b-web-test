@@ -324,6 +324,7 @@ b2b-test — 用 ego-browser + Jev 做 B 端 Web 测试，每个用例留一份�
 
 用法：
   b2b-test init [--yes]              初始化 ego lite / Jev 后端 / 配置，并跑一次离线自检
+  b2b-test key [check]               交互式设置 Jev 后端密钥（本工具不会替你申请），并立即验证
   b2b-test doctor                    体检：环境、引擎、密钥、记录目录
   b2b-test new "<用例描述>" --url <地址> [选项]
                                      为这个用例建工作目录（执行前就建好）
@@ -360,6 +361,267 @@ cmd_version() {
   say "技能目录：$SKILL_ROOT"
   _e=$(find_ego || true)
   [ -n "$_e" ] && say "ego-browser：$_e" || say "ego-browser：未找到"
+}
+
+# ----------------------------------------------------------------- jav key
+# 本工具不申请密钥：注册账号这一步无法自动化。它能做的是把你已有的密钥
+# 存到正确位置、判断后端、并立刻验证连通性——省掉"手改文件 + 猜变量名"。
+
+KEY_PROVIDERS="
+1|OpenRouter|https://openrouter.ai/settings/keys|openrouter|sk-or-
+2|TypeSafe|https://typesafe.ai/|typesafe|
+3|Vercel AI Gateway|https://vercel.com/dashboard|gateway|
+"
+
+key_print_providers() {
+  say "先拿到一个密钥（任意一家都行，最快是第 1 家）："
+  say ""
+  say "  1) OpenRouter         https://openrouter.ai/settings/keys"
+  say "     注册 → 在 Keys 页点 Create Key → 复制形如 sk-or-v1-xxxx 的串"
+  say "  2) TypeSafe           https://typesafe.ai/"
+  say "     注册 → 在控制台复制 API Key"
+  say "  3) Vercel AI Gateway  https://vercel.com/dashboard"
+  say "     打开 AI Gateway → 生成 API Key"
+}
+
+# 用户在控制台复制时经常连变量名和引号一起带过来：
+#   export OPENROUTER_API_KEY="sk-or-v1-xxxx"
+# 这里把外层的 export / 变量名 / 引号剥掉，只留密钥本体。
+# 只剥白名单里的变量名——否则形如 abc=def 的密钥可能被误伤。
+normalize_key() {
+  _v=$1
+  _pass=0
+  while [ "$_pass" -lt 3 ]; do
+    # Order matters: the `export` keyword must go before whitespace is
+    # squeezed out, otherwise "export KEY=" becomes "exportKEY=" and the
+    # keyword no longer matches.
+    _v=$(printf '%s' "$_v" | sed -e 's/^[[:space:]]*export[[:space:]]*//')
+    _v=$(printf '%s' "$_v" | tr -d ' \t\r')
+    # Four separate expressions instead of alternation: BSD sed (macOS) has no
+    # \| operator, and it fails silently rather than erroring.
+    _v=$(printf '%s' "$_v" \
+      | sed -e 's/^TYPESAFE_API_KEY=//' \
+            -e 's/^OPENROUTER_API_KEY=//' \
+            -e 's/^AI_GATEWAY_API_KEY=//' \
+            -e 's/^B2B_JEV_API_KEY=//')
+    _v=$(printf '%s' "$_v" | sed -e 's/^["'"'"']//' -e 's/["'"'"']$//')
+    _pass=$((_pass + 1))
+  done
+  printf '%s' "$_v"
+}
+
+# 写入/更新配置文件里的密钥行，保留其它设置，权限 0600
+config_set_key() {
+  _b=$1
+  _k=$2
+  _dir=$(dirname "$CONFIG_FILE")
+  mkdir -p "$_dir" || die "无法创建 $_dir"
+  _tmp="$_dir/.config.env.tmp.$$"
+  if [ -f "$CONFIG_FILE" ]; then
+    grep -vE '^[[:space:]]*#?[[:space:]]*(B2B_JEV_API_KEY|B2B_JEV_BACKEND|B2B_JEV_BASE_URL|B2B_JEV_MODEL)=' "$CONFIG_FILE" > "$_tmp" 2>/dev/null || true
+  else
+    : > "$_tmp"
+  fi
+  {
+    printf '\n# Jev 决策后端（由 b2b-test key 写入；本工具不会替你申请）\n'
+    printf 'B2B_JEV_API_KEY=%s\n' "$_k"
+    printf 'B2B_JEV_BACKEND=%s\n' "$_b"
+  } >> "$_tmp"
+  chmod 600 "$_tmp" 2>/dev/null || true
+  mv "$_tmp" "$CONFIG_FILE" || die "写入失败：$CONFIG_FILE"
+  chmod 600 "$CONFIG_FILE" 2>/dev/null || true
+}
+
+# 真实连通性验证：不消耗生成额度，只判断密钥是否被后端接受。
+# 密钥放进 0600 的临时 curl 配置，避免出现在 ps 与 shell 历史里。
+key_probe() {
+  _b=$1
+  _k=$2
+  have curl || return 2
+  _cf=$(mktemp "${TMPDIR:-/tmp}/b2b-curl.XXXXXX" 2>/dev/null) || return 2
+  chmod 600 "$_cf" 2>/dev/null || true
+  printf 'header = "Authorization: Bearer %s"\n' "$_k" > "$_cf"
+  printf 'header = "content-type: application/json"\n' >> "$_cf"
+  _code=""
+  case "$_b" in
+    openrouter)
+      _code=$(curl -sS -K "$_cf" -o /dev/null -w '%{http_code}' --max-time 20 \
+        https://openrouter.ai/api/v1/key 2>/dev/null)
+      ;;
+    typesafe)
+      _code=$(curl -sS -K "$_cf" -X POST -d '{}' -o /dev/null -w '%{http_code}' \
+        --max-time 20 https://api.typesafe.ai/v1/systemone 2>/dev/null)
+      ;;
+    gateway)
+      _code=$(curl -sS -K "$_cf" -X POST -d '{}' -o /dev/null -w '%{http_code}' \
+        --max-time 20 https://ai-gateway.vercel.sh/v4/ai/evaluation-model 2>/dev/null)
+      ;;
+    *) rm -f "$_cf"; return 2 ;;
+  esac
+  rm -f "$_cf"
+  case "$_code" in
+    "") return 2 ;;
+    401|403) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+key_after_save() {
+  _b=$1
+  _k=$2
+  _noprobe=$3
+  say ""
+  ok "已写入：${CONFIG_FILE}（权限 0600）"
+  info "后端：$_b · 密钥 $(mask "$_k")"
+  if [ "$_noprobe" = "1" ]; then
+    say ""
+    say "跳过连通性验证（--no-probe）。验证：b2b-test key check"
+    return 0
+  fi
+  say ""
+  say "正在验证密钥是否被后端接受……"
+  key_probe "$_b" "$_k"
+  _rc=$?
+  case "$_rc" in
+    0)
+      ok "密钥有效（后端已接受）"
+      say ""
+      say "下一步："
+      say "   b2b-test new \"你的用例描述\" --url https://your-app.example.com"
+      ;;
+    1)
+      bad "密钥被拒绝（401/403）。请确认复制完整、没有多余空格，或重新生成一个"
+      say "   重新配置：b2b-test key"
+      return 1
+      ;;
+    *)
+      warn "无法完成连通性验证（网络不可达或没有 curl）。密钥已保存，可稍后：b2b-test key check"
+      say "   若你的网络需要代理，可先：export https_proxy=http://127.0.0.1:7897"
+      ;;
+  esac
+  return 0
+}
+
+cmd_key_set() {
+  _backend=""
+  _key=""
+  _noprobe=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --backend) _backend=${2:-}; shift 2 ;;
+      --backend=*) _backend=${1#*=}; shift ;;
+      --stdin) IFS= read -r _key || true; shift ;;
+      --no-probe|--no-verify) _noprobe=1; shift ;;
+      -*) die "未知选项：$1" ;;
+      *) shift ;;
+    esac
+  done
+
+  say "配置 Jev 决策后端密钥"
+  say ""
+  if [ -z "$_key" ]; then
+    key_print_providers
+    say ""
+    printf '选哪一家 [1/2/3]（直接回车 = 1）: '
+    read -r _choice || true
+    case "${_choice:-1}" in
+      1|openrouter) _backend=openrouter ;;
+      2|typesafe) _backend=typesafe ;;
+      3|gateway) _backend=gateway ;;
+      *) die "无效选择：$_choice" ;;
+    esac
+    case "$_backend" in
+      openrouter) _url="https://openrouter.ai/settings/keys" ;;
+      typesafe) _url="https://typesafe.ai/" ;;
+      gateway) _url="https://vercel.com/dashboard" ;;
+    esac
+    say ""
+    say "打开这个页面创建并复制密钥：$_url"
+    printf '把密钥粘到这里（不回显，粘完按回车）: '
+    if [ -t 0 ]; then stty -echo 2>/dev/null || true; fi
+    IFS= read -r _key || true
+    if [ -t 0 ]; then stty echo 2>/dev/null || true; fi
+    printf '\n'
+  fi
+
+  [ -n "$_key" ] || die "没有读到密钥。用法见：b2b-test key"
+  _key=$(normalize_key "$_key")
+  [ -n "$_key" ] || die "密钥为空"
+
+  if [ -z "$_backend" ]; then
+    case "$_key" in
+      sk-or-*) _backend="openrouter" ;;
+      *) _backend="typesafe" ;;
+    esac
+    say "（按密钥形态判断后端：${_backend}；不对可加 --backend 重设）"
+  fi
+  case "$_backend" in
+    openrouter)
+      case "$_key" in
+        sk-or-*) ;;
+        *) warn "你选了 OpenRouter，但这个密钥不是 sk-or- 开头，大概率不对" ;;
+      esac
+      ;;
+  esac
+
+  config_set_key "$_backend" "$_key"
+  key_after_save "$_backend" "$_key" "$_noprobe"
+}
+
+cmd_key_check() {
+  resolve_jev
+  say "Jev 密钥现状"
+  say ""
+  if [ -z "$JEV_KEY" ]; then
+    bad "没有找到密钥"
+    say ""
+    say "本工具不会替你申请密钥。运行下面这条，按提示粘进去即可："
+    say "   b2b-test key"
+    return 1
+  fi
+  ok "密钥：$(mask "$JEV_KEY")"
+  info "后端：${JEV_BACKEND:-auto}"
+  info "来源：${JEV_SOURCE}"
+  [ -n "$JEV_MODEL" ] && info "模型：$JEV_MODEL"
+  say ""
+  say "正在验证密钥是否被后端接受……"
+  key_probe "$JEV_BACKEND" "$JEV_KEY"
+  case $? in
+    0)
+      ok "密钥有效"
+      return 0
+      ;;
+    1)
+      bad "密钥被拒绝（401/403）"
+      say "   重新配置：b2b-test key"
+      return 1
+      ;;
+    *)
+      warn "无法完成验证（网络不可达或没有 curl）"
+      say "   需要代理时：export https_proxy=http://127.0.0.1:7897"
+      return 2
+      ;;
+  esac
+}
+
+cmd_key() {
+  case "${1:-set}" in
+    ""|set) shift 2>/dev/null || true; cmd_key_set "$@" ;;
+    check|status) cmd_key_check ;;
+    -h|--help|help)
+      cat <<'EOF'
+用法：
+  b2b-test key                 交互式设置密钥（选后端 → 粘贴 → 立即验证）
+  b2b-test key check           查看当前密钥来源与后端，并验证是否被接受
+  b2b-test key set --stdin     从标准输入读一行密钥（CI 用，避免密钥进命令行历史）
+  b2b-test key set --stdin --no-probe    只写不验证（离线脚本用）
+
+说明：本工具不会替你申请密钥。密钥写入 ~/.config/b2b-web-test/config.env（0600），
+也可以继续复用 ~/.config/ego-jev/secrets.env，两者都行。
+EOF
+      ;;
+    *) die "未知子命令：key $1" ;;
+  esac
 }
 
 cmd_doctor() {
@@ -413,11 +675,13 @@ cmd_doctor() {
 
   if [ -n "$JEV_KEY" ]; then
     ok "Jev 后端：${JEV_BACKEND:-auto} · 密钥 $(mask "$JEV_KEY")"
-    info "来源：$JEV_SOURCE"
+    info "来源：${JEV_SOURCE}（本工具只读取，没有创建它）"
     [ -n "$JEV_MODEL" ] && info "模型：$JEV_MODEL"
+    info "要换一个：b2b-test key"
   else
-    warn "没有找到 Jev 密钥（TYPESAFE_API_KEY / AI_GATEWAY_API_KEY / OPENROUTER_API_KEY）"
-    info "离线自检仍可运行：b2b-test selfcheck"
+    warn "没有找到 Jev 密钥 —— 这一步需要你自己拿一个（本工具不会替你申请）"
+    info "配置密钥：b2b-test key          （交互式，粘进去就行）"
+    info "没有密钥也能先跑：b2b-test selfcheck（内置 mock，不联网、不花 token）"
     _fail=$((_fail + 1))
   fi
 
@@ -503,17 +767,23 @@ cmd_init() {
 
   resolve_jev
   if [ -n "$JEV_KEY" ]; then
-    ok "Jev 后端：${JEV_BACKEND:-auto} · 密钥 $(mask "$JEV_KEY")（来自 ${JEV_SOURCE}）"
+    ok "Jev 后端：${JEV_BACKEND:-auto} · 密钥 $(mask "$JEV_KEY")"
+    info "来源：$JEV_SOURCE"
+    info "这个密钥是本工具读取到的，不是它创建的；要换一个：b2b-test key"
+    [ -n "$JEV_MODEL" ] && info "模型：$JEV_MODEL"
   else
-    warn "没有找到 Jev 决策后端的密钥"
+    warn "还缺 Jev 后端密钥 —— 这一步需要你自己拿一个"
     say ""
-    say "Jev 需要一个后端密钥（三选一），写入下面任一位置即可："
-    say "  A. 复用已有 ego-jev 配置：$JEV_SECRETS"
-    say "       在里面放 export TYPESAFE_API_KEY=..."
-    say "  B. 写在 b2b-web-test 自己的配置：$CONFIG_FILE"
-    say "       在里面放 B2B_JEV_API_KEY=..."
+    say "  本工具不会替你申请密钥（注册需要邮箱/可能要绑卡，无法自动化）。"
+    say "  拿到之后，运行下面这一条，按提示粘进去就行："
     say ""
-    say "没有密钥时仍可用 b2b-test selfcheck 验证链路（用内置 mock 决策器，不联网、不花 token）。"
+    say "      b2b-test key"
+    say ""
+    say "  还没有密钥？去 https://openrouter.ai/settings/keys 注册 → 点 Create Key →"
+    say "  复制形如 sk-or-v1-xxxx 的串（另外两家：typesafe.ai、vercel.com/dashboard）。"
+    say ""
+    say "  现在也可以先继续：下面的离线自检用内置 mock 决策器，不联网、不花 token，"
+    say "  用来确认工具链本身是通的。"
   fi
 
   # config file
@@ -566,9 +836,33 @@ EOF
     say "离线自检（不联网、不花 token）："
     if cmd_selfcheck; then
       say ""
-      ok "初始化完成。下一步："
-      say "    b2b-test new \"你的用例描述\" --url https://your-app.example.com"
-      say "    b2b-test exec <上面输出的用例目录>"
+      resolve_jev
+      if [ -z "$JEV_KEY" ]; then
+        warn "工具链已经通了，只差一个 Jev 后端密钥（它决定「点哪里」）"
+        say ""
+        say "按顺序做这两步就能跑第一条用例："
+        say "   1) b2b-test key        ← 按提示把密钥粘进去（会自动验证）"
+        say "   2) b2b-test new \"你的用例描述\" --url https://your-app.example.com"
+        say ""
+        if [ -t 0 ]; then
+          printf '现在就去配置密钥吗？[Y/n] '
+          read -r _ans || true
+          case "${_ans:-y}" in
+            ""|y|Y|yes|YES)
+              say ""
+              cmd_key_set || true
+              ;;
+            *) say "好的，随时可以运行：b2b-test key" ;;
+          esac
+        else
+          say "（当前不是交互终端；请手动运行：b2b-test key）"
+        fi
+      else
+        ok "初始化完成。下一步："
+        say "   1) b2b-test new \"你的用例描述\" --url https://your-app.example.com"
+        say "   2) b2b-test exec \"<上一步输出的用例目录>\""
+        say "   3) b2b-test report --open"
+      fi
     else
       say ""
       bad "离线自检失败，请把上面的输出发给我"
@@ -1086,6 +1380,7 @@ shift 2>/dev/null || true
 
 case "$cmd" in
   init) cmd_init "$@" ;;
+  key) cmd_key "$@" ;;
   doctor) cmd_doctor "$@" ;;
   new) cmd_new "$@" ;;
   exec) cmd_exec "$@" ;;
